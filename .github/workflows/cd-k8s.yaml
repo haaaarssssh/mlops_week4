@@ -1,0 +1,80 @@
+name: CD - Build and Deploy to GKE
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: iris-cluster
+  GKE_ZONE: us-central1-a
+  DEPLOYMENT_NAME: iris-api-deployment
+  IMAGE: iris-api
+  REGION: us-central1
+
+jobs:
+  setup-build-publish-deploy:
+    name: Setup, Build, Publish, and Deploy
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+    - name: Configure Docker for Artifact Registry
+      run: |
+        gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+    - name: Pull DVC-tracked model
+      run: |
+        pip install dvc[gs]
+        dvc pull models/iris_model.pkl.dvc
+
+    - name: Build Docker Image
+      run: |
+        docker build \
+          --tag "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/iris-repo/${{ env.IMAGE }}:${{ github.sha }}" \
+          --tag "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/iris-repo/${{ env.IMAGE }}:latest" \
+          .
+
+    - name: Push Docker Image to Artifact Registry
+      run: |
+        docker push "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/iris-repo/${{ env.IMAGE }}:${{ github.sha }}"
+        docker push "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/iris-repo/${{ env.IMAGE }}:latest"
+
+    - name: Get GKE Credentials
+      run: |
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+          --zone ${{ env.GKE_ZONE }} \
+          --project ${{ env.PROJECT_ID }}
+
+    - name: Deploy to GKE
+      run: |
+        # Replace placeholders in deployment.yaml
+        sed -i "s|REGION|${{ env.REGION }}|g" k8s/deployment.yaml
+        sed -i "s|PROJECT_ID|${{ env.PROJECT_ID }}|g" k8s/deployment.yaml
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s/deployment.yaml
+        
+        # Wait for rollout
+        kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }}
+        
+        # Get service details
+        kubectl get services iris-api-service
+
