@@ -13,23 +13,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+      
       - name: Install dependencies
         run: pip install -r requirements.txt
+      
+      - name: Install DVC with GCS support
+        run: pip install dvc[gs]
+      
+      - name: Install pytest
+        run: pip install pytest
+      
+      - name: Setup CML
+        uses: iterative/setup-cml@v1
+      
+      - name: Authenticate to Google Cloud
+        run: |
+          echo '${{ secrets.GCP_CREDENTIALS }}' > $HOME/gcp-key.json
+          export GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcp-key.json
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+      
       - name: DVC pull
         run: dvc pull -r gcsremote
         env:
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp-key.json
+      
       - name: Run Pytest
-        run: pytest tests/
+        run: pytest tests/ --tb=short
+      
       - name: Run CML Report
         env:
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp-key.json
         run: |
           echo "## IRIS Dev Branch Test Report" > report.md
-          pytest tests/ --tb=short | tee -a report.md
+          pytest tests/ --tb=short >> report.md 2>&1 || true
           cml comment create report.md
-
